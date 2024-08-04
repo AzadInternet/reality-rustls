@@ -4,8 +4,12 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Deref;
-
+use std::time::{SystemTime, UNIX_EPOCH};
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, Key, KeyInit};
 use pki_types::ServerName;
+use hkdf::Hkdf;
+use sha2::Sha256;
 
 #[cfg(feature = "tls12")]
 use super::tls12;
@@ -26,6 +30,7 @@ use crate::hash_hs::HandshakeHashBuffer;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::msgs::base::Payload;
+use crate::msgs::codec::Codec;
 use crate::msgs::enums::{Compression, ECPointFormat, ExtensionType, PSKKeyExchangeMode};
 use crate::msgs::handshake::{
     CertificateStatusRequest, ClientExtension, ClientHelloPayload, ClientSessionTicket,
@@ -382,6 +387,17 @@ fn emit_client_hello_for_retry(
     // We don't do renegotiation at all, in fact.
     cipher_suites.push(CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
 
+
+    let mut is_aead_aes = true;
+    match &cipher_suites[0].as_str() {
+        None => {}
+        Some(name) => {
+            if name.to_lowercase().contains("chacha") {
+                is_aead_aes = false;
+            }
+        }
+    }
+
     let mut chp_payload = ClientHelloPayload {
         client_version: ProtocolVersion::TLSv1_2,
         random: input.random,
@@ -438,10 +454,15 @@ fn emit_client_hello_for_retry(
         .map(ClientExtension::ext_type)
         .collect();
 
+
+
+
+
     let mut chp = HandshakeMessagePayload {
         typ: HandshakeType::ClientHello,
         payload: HandshakePayload::ClientHello(chp_payload),
     };
+
 
     let early_key_schedule = match (ech_state.as_mut(), tls13_session) {
         // If we're performing ECH and resuming, then the PSK binder will have been dealt with
@@ -461,6 +482,78 @@ fn emit_client_hello_for_retry(
         // No early key schedule in other cases.
         _ => None,
     };
+
+
+    let mut raw = chp.get_encoding();
+    let raw_session_id_slice = &mut raw[39..(39 + 32)];
+    for value in raw_session_id_slice.iter_mut() {
+        *value = 0;
+    }
+    let public_key: [u8; 32] = <[u8; 32]>::try_from(config.reality_public_key.clone()).unwrap();
+    let mut short_id = config.reality_short_id.clone();
+
+    if short_id.clone().len() < 8 {
+        for i in 0..8 - short_id.clone().len() {
+            short_id.push(0u8);
+        }
+    }
+
+    let short_id: [u8; 8] = <[u8; 8]>::try_from(short_id).unwrap();
+
+    let key_share = key_share.unwrap();
+    let secret_key = key_share.complete(&public_key).unwrap();
+    let key = secret_key.secret_bytes();
+    let random = input.random.0;
+    let salt = &random[..20];
+    let info = "REALITY".as_bytes().to_vec();
+    let hk = Hkdf::<Sha256>::new(Some(&salt[..]), &key);
+    let mut auth_key = [0u8; 32];
+    hk.expand(&info, &mut auth_key).unwrap();
+    let key: &[u8] = &auth_key;
+    let nonce: &[u8] = &random[20..];
+    let start = SystemTime::now();
+    let since_the_epoch = start
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs() as u32;
+    let time = since_the_epoch.to_be_bytes();
+    let plain_text: &[u8] = &[
+        config.reality_version_x,
+        config.reality_version_y,
+        config.reality_version_z,
+        0,
+        time[0],
+        time[1],
+        time[2],
+        time[3],
+        short_id[0],
+        short_id[1],
+        short_id[2],
+        short_id[3],
+        short_id[4],
+        short_id[5],
+        short_id[6],
+        short_id[7],
+    ];
+    let nonce = aes_gcm::Nonce::from_slice(nonce);
+    let payload = aes_gcm::aead::Payload {
+        msg: plain_text,
+        aad: raw.as_slice(),
+    };
+    let mut session_id = vec![];
+    if is_aead_aes {
+        let key = Key::<Aes256Gcm>::from_slice(key);
+        let cipher = Aes256Gcm::new(&key);
+        session_id = cipher.encrypt(&nonce, payload).unwrap();
+    } else {
+        let cipher = chacha20poly1305::ChaCha20Poly1305::new_from_slice(key).unwrap();
+        session_id = cipher.encrypt(&nonce, payload).unwrap();
+    }
+    for i in 0..32 {
+        raw[39 + i] = session_id[i];
+    }
+    chp = HandshakeMessagePayload::read_bytes(&raw).unwrap();
+
 
     let ch = Message {
         version: match retryreq {
@@ -521,16 +614,16 @@ fn emit_client_hello_for_retry(
         input,
         transcript_buffer,
         early_key_schedule,
-        offered_key_share: key_share,
+        offered_key_share: Some(key_share),
         suite,
         ech_state,
     };
 
-    Ok(if support_tls13 && retryreq.is_none() {
-        Box::new(ExpectServerHelloOrHelloRetryRequest { next, extra_exts })
+    if support_tls13 && retryreq.is_none() {
+        Ok( Box::new(ExpectServerHelloOrHelloRetryRequest { next, extra_exts }))
     } else {
-        Box::new(next)
-    })
+        Ok(Box::new(next))
+    }
 }
 
 /// Prepare resumption with the session state retrieved from storage.

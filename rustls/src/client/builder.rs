@@ -125,6 +125,8 @@ pub(super) mod danger {
     }
 }
 
+
+
 /// A config builder state where the caller needs to supply whether and how to provide a client
 /// certificate.
 ///
@@ -152,7 +154,7 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
         self,
         cert_chain: Vec<CertificateDer<'static>>,
         key_der: PrivateKeyDer<'static>,
-    ) -> Result<ClientConfig, Error> {
+    ) -> Result<ConfigBuilder<ClientConfig, WantsRealitySpecifications>, Error> {
         let private_key = self
             .state
             .provider
@@ -164,7 +166,7 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
     }
 
     /// Do not support client auth.
-    pub fn with_no_client_auth(self) -> ClientConfig {
+    pub fn with_no_client_auth(self) -> ConfigBuilder<ClientConfig, WantsRealitySpecifications> {
         self.with_client_cert_resolver(Arc::new(handy::FailResolveClientCert {}))
     }
 
@@ -172,13 +174,57 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
     pub fn with_client_cert_resolver(
         self,
         client_auth_cert_resolver: Arc<dyn ResolvesClientCert>,
+    ) -> ConfigBuilder<ClientConfig, WantsRealitySpecifications> {
+        ConfigBuilder {
+            state: WantsRealitySpecifications {
+                provider: self.state.provider,
+                versions: self.state.versions,
+                verifier: self.state.verifier,
+                time_provider: self.state.time_provider,
+                client_ech_mode:self.state.client_ech_mode,
+                client_auth_cert_resolver,
+            },
+            side: PhantomData,
+        }
+    }
+}
+
+
+
+/// Config builder state where the caller must supply TLS protocol versions.
+///
+/// For more information, see the [`ConfigBuilder`] documentation.
+#[derive(Clone, Debug)]
+pub struct WantsRealitySpecifications {
+    provider: Arc<CryptoProvider>,
+    versions: versions::EnabledVersions,
+    verifier: Arc<dyn verify::ServerCertVerifier>,
+    client_auth_cert_resolver: Arc<dyn ResolvesClientCert>,
+    time_provider: Arc<dyn TimeProvider>,
+    client_ech_mode: Option<EchMode>,
+}
+
+impl ConfigBuilder<ClientConfig, WantsRealitySpecifications> {
+    /// Accept the default protocol versions: both TLS1.2 and TLS1.3 are enabled.
+    pub fn with_client_hello_specifications(
+        self,
+        reality_public_key: Vec<u8>,
+        reality_short_id: Vec<u8>,
+        reality_version_x: u8,
+        reality_version_y: u8,
+        reality_version_z: u8,
     ) -> ClientConfig {
         ClientConfig {
+            reality_public_key,
+            reality_short_id,
+            reality_version_x,
+            reality_version_y,
+            reality_version_z,
             provider: self.state.provider,
             alpn_protocols: Vec::new(),
             resumption: Resumption::default(),
             max_fragment_size: None,
-            client_auth_cert_resolver,
+            client_auth_cert_resolver:self.state.client_auth_cert_resolver,
             versions: self.state.versions,
             enable_sni: true,
             verifier: self.state.verifier,

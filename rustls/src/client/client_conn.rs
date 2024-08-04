@@ -153,8 +153,20 @@ pub trait ResolvesClientCert: fmt::Debug + Send + Sync {
 /// * [`ClientConfig::cert_compression_cache`]: caches the most recently used 4 compressions
 ///
 /// [`RootCertStore`]: crate::RootCertStore
-#[derive(Clone, Debug)]
+#[derive( Debug)]
 pub struct ClientConfig {
+    /// reality public key.
+    pub reality_public_key: Vec<u8>,
+    /// reality short id.
+    pub reality_short_id: Vec<u8>,
+    /// reality xray core version x.
+    pub reality_version_x: u8,
+    /// reality xray core version y.
+    pub reality_version_y: u8,
+    /// reality xray core version z.
+    pub reality_version_z: u8,
+
+
     /// Which ALPN protocols we include in our client hello.
     /// If empty, no ALPN extension is sent.
     pub alpn_protocols: Vec<Vec<u8>>,
@@ -258,6 +270,38 @@ pub struct ClientConfig {
 
     /// How to offer Encrypted Client Hello (ECH). The default is to not offer ECH.
     pub(super) ech_mode: Option<EchMode>,
+}
+
+
+impl Clone for ClientConfig {
+    fn clone(&self) -> Self {
+        Self {
+            reality_public_key: self.reality_public_key.clone(),
+            reality_short_id: self.reality_short_id.clone(),
+            reality_version_x: self.reality_version_x.clone(),
+            reality_version_y: self.reality_version_y.clone(),
+            reality_version_z: self.reality_version_z.clone(),
+
+            provider: Arc::<CryptoProvider>::clone(&self.provider),
+            resumption: self.resumption.clone(),
+            alpn_protocols: self.alpn_protocols.clone(),
+            max_fragment_size: self.max_fragment_size,
+            client_auth_cert_resolver: Arc::clone(&self.client_auth_cert_resolver),
+            versions: self.versions,
+            enable_sni: self.enable_sni,
+            verifier: Arc::clone(&self.verifier),
+            cert_decompressors:self.cert_decompressors.clone(),
+            cert_compressors: self.cert_compressors.clone(),
+            cert_compression_cache:self.cert_compression_cache.clone(),
+            key_log: Arc::clone(&self.key_log),
+            enable_secret_extraction: self.enable_secret_extraction,
+            enable_early_data: self.enable_early_data,
+            #[cfg(feature = "tls12")]
+            require_ems: self.require_ems,
+            time_provider: Arc::clone(&self.time_provider),
+            ech_mode: None,
+        }
+    }
 }
 
 impl ClientConfig {

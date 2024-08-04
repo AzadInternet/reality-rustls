@@ -425,7 +425,7 @@ pub trait ActiveKeyExchange: Send + Sync {
     /// from a `&[u8]`.
     ///
     /// This consumes and so terminates the [`ActiveKeyExchange`].
-    fn complete(self: Box<Self>, peer_pub_key: &[u8]) -> Result<SharedSecret, Error>;
+    fn complete(&self, peer_pub_key: &[u8]) -> Result<SharedSecret, Error>;
 
     /// Completes the key exchange for the given TLS version, given the peer's public key.
     ///
@@ -452,7 +452,7 @@ pub trait ActiveKeyExchange: Send + Sync {
     ///
     /// This consumes and so terminates the [`ActiveKeyExchange`].
     fn complete_for_tls_version(
-        self: Box<Self>,
+        &self,
         peer_pub_key: &[u8],
         tls_version: &SupportedProtocolVersion,
     ) -> Result<SharedSecret, Error> {
@@ -480,6 +480,8 @@ pub trait ActiveKeyExchange: Send + Sync {
     /// Return the group being used.
     fn group(&self) -> NamedGroup;
 }
+
+
 
 /// The result from [`SupportedKxGroup::start_and_complete()`].
 pub struct CompletedKeyExchange {

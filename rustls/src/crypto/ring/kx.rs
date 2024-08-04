@@ -2,13 +2,13 @@
 
 use alloc::boxed::Box;
 use core::fmt;
-
+use std::prelude::rust_2015::Vec;
+use aes_gcm::aead::OsRng;
 use super::ring_like::agreement;
-use super::ring_like::rand::SystemRandom;
 use crate::crypto::{ActiveKeyExchange, SharedSecret, SupportedKxGroup};
-use crate::error::{Error, PeerMisbehaved};
+use crate::error::{Error};
 use crate::msgs::enums::NamedGroup;
-use crate::rand::GetRandomFailed;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 /// A key-exchange group supported by *ring*.
 ///
@@ -30,19 +30,13 @@ struct KxGroup {
 
 impl SupportedKxGroup for KxGroup {
     fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, Error> {
-        let rng = SystemRandom::new();
-        let priv_key = agreement::EphemeralPrivateKey::generate(self.agreement_algorithm, &rng)
-            .map_err(|_| GetRandomFailed)?;
-
-        let pub_key = priv_key
-            .compute_public_key()
-            .map_err(|_| GetRandomFailed)?;
-
+        let private = StaticSecret::random_from_rng(OsRng);
+        let public = PublicKey::from(&private);
         Ok(Box::new(KeyExchange {
             name: self.name,
             agreement_algorithm: self.agreement_algorithm,
-            priv_key,
-            pub_key,
+            private_key: private,
+            public_key: public.as_bytes().to_vec(),
         }))
     }
 
@@ -93,19 +87,27 @@ pub static ALL_KX_GROUPS: &[&dyn SupportedKxGroup] = &[X25519, SECP256R1, SECP38
 
 /// An in-progress key exchange.  This has the algorithm,
 /// our private key, and our public key.
-struct KeyExchange {
+#[derive(Clone)]
+pub(crate) struct KeyExchange {
     name: NamedGroup,
     agreement_algorithm: &'static agreement::Algorithm,
-    priv_key: agreement::EphemeralPrivateKey,
-    pub_key: agreement::PublicKey,
+    private_key: StaticSecret,
+    public_key: Vec<u8>,
 }
 
 impl ActiveKeyExchange for KeyExchange {
     /// Completes the key exchange, given the peer's public key.
-    fn complete(self: Box<Self>, peer: &[u8]) -> Result<SharedSecret, Error> {
-        let peer_key = agreement::UnparsedPublicKey::new(self.agreement_algorithm, peer);
-        super::ring_shim::agree_ephemeral(self.priv_key, &peer_key)
-            .map_err(|_| PeerMisbehaved::InvalidKeyShare.into())
+    // fn complete(self: Box<Self>, peer: &[u8]) -> Result<SharedSecret, Error> {
+    //     let peer_key = agreement::UnparsedPublicKey::new(self.agreement_algorithm, peer);
+    //     super::ring_shim::agree_ephemeral(self.priv_key, &peer_key)
+    //         .map_err(|_| PeerMisbehaved::InvalidKeyShare.into())
+    // }
+
+    fn complete(&self, peer: &[u8]) -> Result<SharedSecret, Error> {
+        let key: [u8; 32] = <[u8; 32]>::try_from(peer).unwrap();
+        let peer_key = PublicKey::from(key);
+        let secret_bytes = self.private_key.diffie_hellman(&peer_key).as_bytes().to_vec();
+        return Ok(SharedSecret::from(secret_bytes.as_slice()));
     }
 
     /// Return the group being used.
@@ -115,7 +117,7 @@ impl ActiveKeyExchange for KeyExchange {
 
     /// Return the public key being used.
     fn pub_key(&self) -> &[u8] {
-        self.pub_key.as_ref()
+        self.public_key.as_ref()
     }
 }
 
